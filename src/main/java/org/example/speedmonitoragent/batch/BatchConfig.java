@@ -40,6 +40,10 @@ public class BatchConfig {
                 .writer(writer)
                 .build();
     }
+    @Bean
+    public SeleniumSpeedTestReader seleniumSpeedTestReader() {
+        return new SeleniumSpeedTestReader();
+    }
 
     @Bean
     public Job speedTestJob(JobRepository jobRepository, Step speedTestStep) {

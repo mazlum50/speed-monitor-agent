@@ -6,6 +6,8 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.batch.infrastructure.item.ItemReader;
 import org.springframework.stereotype.Component;
 
@@ -13,7 +15,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 
 /**
- * Custom ItemReader für Spring Batch, der Netzwerkmessdaten über Selenium erhebt.
+ * Reader-Klasse zur Erfassung von Download-, Upload- und Ping-Messwerten via Selenium.
  */
 @Component
 public class SeleniumSpeedTestReader implements ItemReader<NetworkSpeedMetrics> {
@@ -22,41 +24,61 @@ public class SeleniumSpeedTestReader implements ItemReader<NetworkSpeedMetrics> 
 
     @Override
     public NetworkSpeedMetrics read() {
-        // Stellt sicher, dass der Reader pro Batch-Durchlauf nur einmal Daten liefert (beendet den Batch-Step)
         if (isRead) {
-            isRead = false;
+            isRead = false; // Zurücksetzen für den nächsten Durchlauf
             return null;
         }
 
-        // Konfiguration für den headless Chrome-Browser
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new"); // Anzeigeloser Modus für Hintergrundausführung
+        options.addArguments("--headless=new");
         options.addArguments("--disable-gpu");
         options.addArguments("--no-sandbox");
 
         WebDriver driver = new ChromeDriver(options);
+        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(60));
 
         try {
-            // Aufruf der Speedtest-Webseite (Fast.com)
             driver.get("https://fast.com");
-            driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(30));
 
-            // Warten auf das Messergebnis für die Download-Geschwindigkeit
+            // 1. Warten bis der Download-Messvorgang abgeschlossen ist (Klasse 'succeeded' am Element)
+            wait.until(ExpectedConditions.attributeContains(By.id("speed-value"), "class", "succeeded"));
+
             WebElement speedValueElement = driver.findElement(By.id("speed-value"));
+            double downloadSpeed = parseDoubleSafely(speedValueElement.getText());
 
-            // Kurze Wartezeit zur Erfassung des finalen Werts
-            Thread.sleep(15000);
+            // 2. Klick auf "Mehr Informationen anzeigen"
+            try {
+                WebElement showMoreBtn = wait.until(
+                        ExpectedConditions.elementToBeClickable(By.id("show-more-details-link"))
+                );
+                showMoreBtn.click();
 
-            Double downloadSpeed = Double.parseDouble(speedValueElement.getText());
+                // 3. Warten bis Upload-Messung abgeschlossen ist
+                wait.until(ExpectedConditions.attributeContains(By.id("upload-metric"), "class", "succeeded"));
+            } catch (Exception ignored) {
+                // Falls Zusatzinformationen fehlschlagen, behalten wir den Download-Wert
+            }
+
+            // 4. Werte auslesen
+            double uploadSpeed = 0.0;
+            try {
+                WebElement uploadElement = driver.findElement(By.id("upload-value"));
+                uploadSpeed = parseDoubleSafely(uploadElement.getText());
+            } catch (Exception ignored) {}
+
+            double ping = 0.0;
+            try {
+                WebElement pingElement = driver.findElement(By.id("latency-value"));
+                ping = parseDoubleSafely(pingElement.getText());
+            } catch (Exception ignored) {}
 
             isRead = true;
 
-            // Rückgabe des erfassten Messobjekts
             return NetworkSpeedMetrics.builder()
                     .timestamp(LocalDateTime.now())
                     .downloadSpeed(downloadSpeed)
-                    .uploadSpeed(0.0) // Dummy-Wert oder Erweiterung für Upload
-                    .ping(0.0)         // Dummy-Wert oder Erweiterung für Ping
+                    .uploadSpeed(uploadSpeed)
+                    .ping(ping)
                     .status("SUCCESS")
                     .build();
 
@@ -64,11 +86,21 @@ public class SeleniumSpeedTestReader implements ItemReader<NetworkSpeedMetrics> 
             isRead = true;
             return NetworkSpeedMetrics.builder()
                     .timestamp(LocalDateTime.now())
+                    .downloadSpeed(0.0)
+                    .uploadSpeed(0.0)
+                    .ping(0.0)
                     .status("FAILED")
                     .build();
         } finally {
-            // Schließen des Browsers nach Abschluss der Messung
             driver.quit();
+        }
+    }
+
+    private double parseDoubleSafely(String text) {
+        try {
+            return Double.parseDouble(text.trim());
+        } catch (Exception e) {
+            return 0.0;
         }
     }
 }
